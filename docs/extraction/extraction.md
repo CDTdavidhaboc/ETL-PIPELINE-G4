@@ -16,6 +16,7 @@ Identify and describe the source from which the data will be extracted.
 
 Paintelligent is the source system and the given CSV file by the client used for the project. It supports the retail operation of Garcia Paint Center and contains the operational data needed for sales, product, inventory, and paint analysis activities.
 
+
 ## 1.2 Source Database or File
 
 - **Database management system:** Supabase PostgreSQL
