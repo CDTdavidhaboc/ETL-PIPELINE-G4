@@ -82,8 +82,8 @@ Extraction metadata and logs will be recorded for each extraction run to support
 |---|---|---|
 | Pipeline Run ID | Uniquely identifies each extraction run. | `RUN-2026-001` |
 | Table or File Name | Identifies the source data processed. | `paint_analysis_history / Product.csv / Sales.csv` |
-| Extraction Start Timestamp | Records when extraction begins. | `--` |
-| Extraction End Timestamp | Records when extraction finishes. | `--` |
+| Extraction Start Timestamp | Records when extraction begins. | `starts at:` |
+| Extraction End Timestamp | Records when extraction finishes. | `ends at:` |
 | Extraction Status | Shows whether the extraction completed successfully. | `SUCCESS / FAILED` |
 | Number of Records Read | Records available from the source. | `1,250` |
 | Number of Records Extracted | Records successfully included in the output. | `1,250` |
