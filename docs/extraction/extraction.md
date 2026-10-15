@@ -162,89 +162,209 @@ Operational extraction logs will be retained according to the standard retention
 
 ## 6.4 Schema Consistency
 
-Unexpected changes to required column names, data types, or identifiers will be documented and reviewed before the extraction is accepted.
+Schema consistency ensures that the extracted data follows the expected structure before it moves to the next stage.
 
-If a source field changes but can be safely mapped to the documented standardized field, the mapping will be updated and recorded.
-
-If a required field is removed or its type becomes incompatible with the expected structure, the extraction will be flagged for review and will not proceed automatically to the next stage.
+- The required column names, data types, and identifiers must match the documented schema.
+- Any unexpected changes in the source data structure must be recorded and reviewed.
+- If a column name changes but the data can still be mapped correctly, the mapping must be updated and documented.
+- If a required column is missing or has an incompatible data type, the extraction must be flagged for review.
+- The extracted data must not proceed to the Transformation Stage until critical schema issues are resolved.
 
 ---
 
 # 7. Extraction Acceptance and Handover Rules
 
-Define the conditions that determine whether extracted data can proceed to the next stage.
+The extraction stage must check the extracted data before passing it to the Transformation Stage. These rules help ensure that the data is complete, readable, and ready for the next process.
 
-For each rule, document:
+## 7.1 Automatic Approval
 
-- Validation condition
-- Acceptance criteria
-- Pipeline action
-- Automatic or manual decision
-- Responsible person or role, if manual approval is required
+The extracted data can proceed automatically when all critical validation checks pass.
 
-## Required Decisions
+- The Product CSV and Sales CSV files are available and readable.
+- The paint_analysis_history table is accessible in Supabase PostgreSQL.
+- All required columns are present and follow the expected schema.
+- The identifiers in the paint analysis records are present and unique.
+- The extracted record counts are correct.
+- The output files are generated successfully.
+- No critical extraction errors are found.
 
-### 1. Automatic Approval
+When all these conditions are met, the extraction status will be marked as APPROVED, and the data can proceed to the Transformation Stage.
 
-Define the conditions for proceeding automatically.
+## 7.2 Manual Review
 
-**Example:** All critical validation checks pass.
+Manual review is required when the extraction has warnings that do not immediately prevent the process from continuing.
 
-### 2. Manual Review
+Examples include:
 
-Define the conditions that require review.
+- The number of extracted records is different from the expected count.
+- Some records contain missing values in non-critical fields.
+- Unexpected columns are found in the source files.
+- The source data contains unusual values that need to be checked.
+- The extraction log contains warnings that require further investigation.
 
-**Example:** Non-critical warnings or unexpected record counts.
+The pipeline must hold the affected data until an authorized team member reviews the issue. The reviewer must document the findings and decide whether the data can be accepted or must be extracted again.
 
-### 3. Rejection or Failure
+## 7.3 Rejection or Failure
 
-Define the conditions that prevent the data from proceeding.
+The extracted data must be rejected when a critical issue prevents it from meeting the required conditions.
 
-Specify whether the pipeline retries, quarantines the data, or stops.
+Examples include:
 
-### 4. Handover
+- The Supabase database cannot be accessed.
+- A required CSV file is missing or cannot be read.
+- The paint_analysis_history table cannot be accessed.
+- A required column is missing or has an incompatible data type.
+- A required identifier is missing or duplicated.
+- The output file is incomplete or cannot be generated.
+- The extraction process stops before all required data is extracted.
 
-Define what output, metadata, and validation results are passed to the next stage.
+When a failure occurs, the pipeline must stop the handover process and record the error in the extraction log. The team must resolve the problem and rerun the extraction when necessary. Failed or incomplete data must not be passed to the Transformation Stage.
 
-## Example: Decision Rules
+## 7.4 Handover to the Transformation Stage
+
+After the extraction is approved, the pipeline must prepare the extracted data and its supporting records for the next stage.
+
+The handover must include:
+
+- *Extracted data:* The Product CSV, Sales CSV, and exported SQL file containing the paint_analysis_history data.
+- *Extraction metadata:* The pipeline run ID, source names, start and end timestamps, extraction status, and record counts.
+- *Validation results:* The results of the required checks, including schema, identifiers, record counts, and output file availability.
+- *Extraction logs:* Information about successful operations, warnings, errors, and any actions taken to resolve problems.
+- *Handover status:* The final approval decision indicating whether the data can proceed to the Transformation Stage.
+
+The receiving stage must confirm that the required files and documentation are available. Data cleaning, standardization, and business-related changes will be handled during the Transformation Stage.
+
+## 7.5 Extraction Decision Rules
 
 | Overall Condition | Acceptance Decision | Pipeline Action |
 |---|---|---|
-| All required tables PASS | APPROVED | Proceed to Transformation |
-| One or more non-critical WARNING | MANUAL REVIEW | Hold pipeline |
-| One or more critical FAIL | REJECTED | Stop/retry/quarantine |
+| All critical validation checks pass | APPROVED | Proceed to Transformation |
+| Non-critical warnings are found | MANUAL REVIEW | Hold the affected data for review |
+| A critical validation check fails | REJECTED | Stop the handover and resolve the issue |
+| Extraction is incomplete | FAILED | Record the error and rerun when appropriate |
 
-## Validation Summary Result
+## 7.6 Validation Summary
 
-| Validation | Result |
+The validation summary will record the results of the extraction checks for each source.
+
+| Validation Check | Expected Result |
 |---|---|
-| sales table validation | PASS |
-| customers table validation | PASS |
-| products table validation | WARNING |
-| orders table validation | PASS |
-| Overall Extraction | MANUAL REVIEW |
+| Product CSV validation | PASS if the file is readable and required columns are present |
+| Sales CSV validation | PASS if the file is readable and required columns are present |
+| paint_analysis_history validation | PASS if the table is accessible and required columns are present |
+| Identifier validation | PASS if required identifiers are present and unique |
+| Record count validation | PASS if the extracted records are properly accounted for |
+| Output file validation | PASS if the required output is generated and readable |
+| Overall Extraction | APPROVED only when all critical checks pass |
+
+The actual validation results must be recorded after the extraction process runs. The pipeline must not mark the extraction as approved until the required checks have been completed.
 
 ---
 
 # 8. Common Extraction Problems and Mitigation
 
-Identify realistic extraction problems that may occur in your selected source system.
+The extraction process may encounter problems when reading CSV files or accessing the Paintelligent Supabase PostgreSQL database. These problems must be recorded and handled properly to protect the quality and completeness of the extracted data.
 
-For each problem, document:
+## 8.1 Database Connection Failure
 
-- Problem description
-- Possible cause
-- Impact on the extraction process
-- Proposed solution or mitigation
+*Problem Description:* The extraction process cannot connect to the Supabase PostgreSQL database.
 
-## Requirements
+*Possible Cause:* The database is unavailable, the connection settings are incorrect, or the network connection is interrupted.
 
-- Must be relevant to the selected source.
-- Solutions must be technically reasonable.
-- Avoid listing generic errors without explaining their impact and handling.
+*Impact:* The paint_analysis_history data cannot be extracted, which may prevent the pipeline from completing.
 
-## Expected Output
+*Proposed Solution:* Check the database connection settings, credentials, network connection, and database availability. Retry the connection when appropriate and record the error in the extraction log.
 
-The documentation must be consistent with the implemented extraction process and provide sufficient information for team member to understand, validate, monitor, and maintain the extraction stage.
+## 8.2 Missing or Unavailable CSV Files
 
-The extracted data must be validated and packaged for handover to the next stage: Transformation. Data cleaning, standardization, and business transformations must not be performed unless explicitly required by the extraction process.
+*Problem Description:* The Product CSV or Sales CSV file cannot be found or opened.
+
+*Possible Cause:* The file is missing, has been renamed, or is stored in the wrong folder.
+
+*Impact:* The pipeline cannot extract the required product or sales data.
+
+*Proposed Solution:* Check the expected file location and confirm that the correct file name is used. Restore or provide the missing file before rerunning the extraction.
+
+## 8.3 Incorrect CSV Format or Encoding
+
+*Problem Description:* A CSV file cannot be read correctly because its format or character encoding is not supported by the extraction process.
+
+*Possible Cause:* The file uses an unexpected delimiter, encoding, or structure.
+
+*Impact:* The extraction may fail, or some values may be read incorrectly.
+
+*Proposed Solution:* Check the CSV format, delimiter, and encoding. Update the file-reading settings when necessary and verify that the data can be read correctly before accepting the extraction.
+
+## 8.4 Missing or Changed Columns
+
+*Problem Description:* A required column is missing, renamed, or changed in the source file or database table.
+
+*Possible Cause:* The source data structure was updated without updating the extraction documentation or process.
+
+*Impact:* The extraction may fail or produce data that does not match the expected schema.
+
+*Proposed Solution:* Compare the source columns with the documented schema. Update the mapping and documentation if the change is valid. If a required field is missing or incompatible, hold the extraction for review.
+
+## 8.5 Duplicate or Missing Identifiers
+
+*Problem Description:* Some records in paint_analysis_history have missing or duplicate identifiers.
+
+*Possible Cause:* The source data contains incomplete records or duplicate entries.
+
+*Impact:* Records may be difficult to identify and track correctly during later processing.
+
+*Proposed Solution:* Check the affected identifiers and record the validation results. Report the issue for review and do not approve the extraction until the identifier problem has been resolved or formally accepted under the project's rules.
+
+## 8.6 Incomplete Data Extraction
+
+*Problem Description:* The number of records extracted does not match the number of records available from the source.
+
+*Possible Cause:* The extraction was interrupted, a query failed, or some records were not included in the output.
+
+*Impact:* The dataset may be incomplete and may not represent all available source records.
+
+*Proposed Solution:* Compare the source and extracted record counts. Check the extraction logs for errors and rerun the extraction when necessary. Approve the data only after the missing records have been accounted for.
+
+## 8.7 Export File Generation Failure
+
+*Problem Description:* The SQL export file is missing, incomplete, or cannot be read.
+
+*Possible Cause:* The export process failed, the database connection was interrupted, or the file was not saved correctly.
+
+*Impact:* The paint analysis data cannot be handed over reliably to the next stage.
+
+*Proposed Solution:* Check the export process and destination folder. Generate the SQL export again and verify that the file exists, can be accessed, and contains the required paint_analysis_history data.
+
+## 8.8 Extraction Process Interruption
+
+*Problem Description:* The extraction stops before all required sources have been processed.
+
+*Possible Cause:* A program error, unexpected system shutdown, or connection interruption occurs during extraction.
+
+*Impact:* Some required datasets may be missing, and the extraction run may be incomplete.
+
+*Proposed Solution:* Record the failure in the extraction log, identify the source where the process stopped, and resolve the cause. Rerun the extraction and perform the required validation checks before handing over the data.
+
+## 8.9 Logging Failure
+
+*Problem Description:* The extraction process completes, but the expected log information is missing or incomplete.
+
+*Possible Cause:* The log file cannot be written, the destination folder is unavailable, or the logging process encounters an error.
+
+*Impact:* The team may have difficulty checking extraction results, identifying problems, or tracking previous runs.
+
+*Proposed Solution:* Check the log file path and write permissions. Make sure that the extraction process records its status, record counts, timestamps, validation results, and errors. If logging fails, report the issue and restore the logging process before treating the run as fully documented.
+
+## 8.10 General Error Handling Rules
+
+To keep the extraction process reliable, the following rules must be followed:
+
+- Record extraction errors and warnings in the log file.
+- Do not approve incomplete or invalid output.
+- Retry failed operations only when the cause may be temporary or has been resolved.
+- Check the extracted data again after rerunning the process.
+- Keep the original source data unchanged during extraction.
+- Do not perform data cleaning or business transformations during this stage.
+- Pass only approved data and its required documentation to the Transformation Stage.
+
+The extraction stage is complete when all required sources have been processed, the output has passed the necessary validation checks, and the data and supporting records are ready for handover.
