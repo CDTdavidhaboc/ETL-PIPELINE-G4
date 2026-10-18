@@ -1,0 +1,1199 @@
+        rejection = None
+
+        for column in ["id", "color", "rgb", "paint_components"]:
+            value = row_data.get(column)
+            cleaned = clean_text(value)
+            if not (pd.isna(value) and pd.isna(cleaned)) and str(value) != str(cleaned):
+                row_modified = True
+            row_data[column] = cleaned
+
+        # The current analysis extractor does not request id. Only enforce unique
+        # IDs when the source actually provided them.
+        if "id" in df.columns and not is_blank(row_data["id"]):
+            identifier = str(row_data["id"])
+            if identifier in seen_ids:
+                rejection = ("C-04", "Duplicate paint analysis id")
+            else:
+                seen_ids.add(identifier)
+
+        if not is_blank(row_data["rgb"]) and not validate_rgb(row_data["rgb"]):
+            rejection = rejection or ("C-07", "Malformed RGB value or channel outside 0-255")
+
+        if not is_blank(row_data["paint_components"]) and not validate_json_like(row_data["paint_components"]):
+            rejection = rejection or ("C-08", "Malformed JSON in paint_components")
+
+        raw_date = row_data["analysis_date"]
+        converted_date = parse_date(raw_date, date_only=False)
+        if not pd.isna(raw_date) and not pd.isna(converted_date) and str(raw_date) != str(converted_date):
+            row_modified = True
+        if not pd.isna(raw_date) and pd.isna(converted_date):
+            rejection = rejection or ("C-06", "Invalid analysis_date")
+        row_data["analysis_date"] = converted_date
+
+        if rejection:
+            add_quarantine(quarantine, batch_id, "paint_analysis", source_row, original_record, *rejection)
+            continue
+
+        kept_rows.append(row_data)
+        if row_modified:
+            modified_count += 1
+
+    result = pd.DataFrame(kept_rows, columns=PAINT_COLUMNS)
+    result = result.astype(object).where(pd.notna(result), None)
+    stats = {
+        "records_read": read_count,
+        "records_output": len(result),
+        "records_rejected": read_count - len(result),
+        "records_modified": modified_count,
+    }
+    return result, stats, ["C-01", "C-04", "C-06", "C-07", "C-08"]
+
+
+# ---------------------------------------------------------------------------
+# MAIN TRANSFORMATION RUN
+# ---------------------------------------------------------------------------
+
+def run_transformation() -> int:
+    run_id = make_run_id()
+    batch_id = f"BATCH-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+    start_clock = time.perf_counter()
+    start_ts = timestamp()
+
+    datasets = {
+        "products": {"records_read": 0, "records_output": 0, "records_rejected": 0, "records_modified": 0},
+        "sales": {"records_read": 0, "records_output": 0, "records_rejected": 0, "records_modified": 0},
+        "paint_analysis": {"records_read": 0, "records_output": 0, "records_rejected": 0, "records_modified": 0},
+    }
+    validation_results: dict[str, str] = {}
+    rules_applied: dict[str, list[str]] = {}
+    errors: list[str] = []
+    quarantine: list[dict[str, Any]] = []
+    overall_status = "FAILED"
+    parent_run_id = "NOT_RETURNED_BY_EXTRACTOR"
+
+    logger.info("=" * 78)
+    logger.info("PAINTELLIGENT TRANSFORMATION REPORT")
+    logger.info("Run ID: %s", run_id)
+    logger.info("Batch ID: %s", batch_id)
+    logger.info("Start Timestamp: %s", start_ts)
+    logger.info("Code Version: %s | Rules Version: %s", CODE_VERSION, RULES_VERSION)
+
+    try:
+        products_raw, sales_raw, paint_raw, parent_run_id = get_extracted_data()
+
+        logger.info("Extracted DataFrames received: products=%s, sales=%s, paint_analysis=%s",
+                    len(products_raw), len(sales_raw), len(paint_raw))
+
+        products, datasets["products"], rules_applied["products"] = transform_products(
+            products_raw, batch_id, quarantine
+        )
+        sales, datasets["sales"], rules_applied["sales"] = transform_sales(
+            sales_raw, products, batch_id, quarantine
+        )
+        paint, datasets["paint_analysis"], rules_applied["paint_analysis"] = transform_paint_analysis(
+            paint_raw, batch_id, quarantine
+        )
+
+        # Validation: schema, duplicate IDs, date/numeric conversions, and row reconciliation.
+        for name, df, expected_columns in [
+            ("products", products, PRODUCT_COLUMNS),
+            ("sales", sales, SALES_COLUMNS),
+            ("paint_analysis", paint, PAINT_COLUMNS),
+        ]:
+            schema_ok = list(df.columns) == expected_columns
+            stats = datasets[name]
+            reconciliation_ok = (
+                stats["records_read"] == stats["records_output"] + stats["records_rejected"]
+            )
+            validation_results[f"{name}.schema"] = "PASS" if schema_ok else "FAIL"
+            validation_results[f"{name}.record_reconciliation"] = "PASS" if reconciliation_ok else "FAIL"
+            if not schema_ok:
+                errors.append(f"{name}: output schema mismatch")
+            if not reconciliation_ok:
+                errors.append(f"{name}: record reconciliation failed")
+
+        # Write outputs even when some rows were quarantined, for review.
+        products.to_csv(OUTPUT_DIR / "products_transformed.csv", index=False, encoding="utf-8-sig")
+        sales.to_csv(OUTPUT_DIR / "sales_transformed.csv", index=False, encoding="utf-8-sig")
+        paint.to_csv(OUTPUT_DIR / "paint_analysis_transformed.csv", index=False, encoding="utf-8-sig")
+
+        pd.DataFrame(quarantine, columns=QUARANTINE_COLUMNS).to_csv(
+            QUARANTINE_FILE, index=False, encoding="utf-8-sig"
+        )
+
+        rejected_total = sum(item["records_rejected"] for item in datasets.values())
+        read_total = sum(item["records_read"] for item in datasets.values())
+        rejection_rate = (rejected_total / read_total * 100) if read_total else 0.0
+        validation_results["rejection_rate"] = (
+            "PASS" if read_total > 0 and rejection_rate <= 1.0 else
+            "WARNING" if read_total > 0 else "FAIL (no input records)"
+        )
+
+        critical_failures = any(value == "FAIL" for key, value in validation_results.items()
+                                if key.endswith(".schema") or key.endswith(".record_reconciliation"))
+        if critical_failures:
+            overall_status = "FAILED"
+        elif read_total == 0:
+            overall_status = "FAILED"
+            errors.append("No input records were read; automatic approval is not allowed.")
+        elif rejection_rate > 1.0:
+            overall_status = "MANUAL_REVIEW"
+        elif rejected_total > 0:
+            # Any rejection should be visible even if within the threshold.
+            overall_status = "SUCCESS_WITH_QUARANTINE"
+        else:
+            overall_status = "SUCCESS"
+
+        logger.info("Dataset Summary:")
+        for name, stats in datasets.items():
+            logger.info(
+                "  %s | read=%d | output=%d | modified=%d | rejected=%d",
+                name, stats["records_read"], stats["records_output"],
+                stats["records_modified"], stats["records_rejected"]
+            )
+            logger.info("  %s rules applied: %s", name, ", ".join(rules_applied[name]))
+
+        logger.info("Validation Results: %s", json.dumps(validation_results, ensure_ascii=False))
+        logger.info("Quarantine file: %s (%d records)", QUARANTINE_FILE, len(quarantine))
+        logger.info("Rejection Rate: %.3f%%", rejection_rate)
+        logger.info("Transformation Status: %s", overall_status)
+2026-10-18T09:54:46 | INFO | ==============================================================================
+2026-10-18T09:54:47 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18T09:54:47 | INFO | Run ID: TR-20261018-82C01B
+2026-10-18T09:54:47 | INFO | Batch ID: BATCH-20261018-A0B9FD
+2026-10-18T09:54:47 | INFO | Start Timestamp: 2026-10-18T01:54:46+00:00
+2026-10-18T09:54:47 | INFO | Code Version: 1.0.0 | Rules Version: 1.0.0
+2026-10-18T09:55:01 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18T09:55:01 | ERROR | Transformation failed
+Traceback (most recent call last):
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 669, in run_transformation
+    paint, datasets["paint_analysis"], rules_applied["paint_analysis"] = transform_paint_analysis(
+                                                                         ~~~~~~~~~~~~~~~~~~~~~~~~^
+        paint_raw, batch_id, quarantine
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 581, in transform_paint_analysis
+    cleaned = clean_text(value)
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 261, in clean_text
+    if pd.isna(value):
+       ~~~~~~~^^^^^^^
+ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18T09:55:01 | INFO | Run Metadata:
+2026-10-18T09:55:01 | INFO |   Parent Run ID: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18T09:55:01 | INFO |   Batch Window: Full available source data
+2026-10-18T09:55:01 | INFO |   Tables: products, sales, paint_analysis
+2026-10-18T09:55:01 | INFO |   Dataset Metrics: {"products": {"records_read": 579, "records_output": 0, "records_rejected": 579, "records_modified": 0}, "sales": {"records_read": 796, "records_output": 796, "records_rejected": 0, "records_modified": 0}, "paint_analysis": {"records_read": 0, "records_output": 0, "records_rejected": 0, "records_modified": 0}}
+2026-10-18T09:55:01 | INFO |   Rules Applied: {"products": ["C-01", "C-02", "C-03", "C-04"], "sales": ["C-01", "C-02", "C-03", "C-04", "C-05", "C-06", "Sales source did not provide sales_id; duplicate check skipped"]}
+2026-10-18T09:55:01 | INFO |   Validation Results: {}
+2026-10-18T09:55:01 | INFO |   Error Code: TRANSFORMATION_FAILED
+2026-10-18T09:55:01 | INFO |   Log Retention Days (policy): 30
+2026-10-18T09:55:01 | INFO |   Transformation Log: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\logs\transformation.log
+2026-10-18T09:55:01 | INFO |   Quarantine File: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\Transformation\output\quarantine.csv
+2026-10-18T09:55:01 | INFO | End Timestamp: 2026-10-18T01:55:01+00:00
+2026-10-18T09:55:01 | INFO | Duration: 14.575 seconds
+2026-10-18T09:55:01 | INFO | Total Records: read=1375 | output=796 | modified=0 | rejected=579
+2026-10-18T09:55:01 | INFO | Error Message / Code: ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18T09:55:01 | INFO | ==============================================================================
+2026-10-18T09:59:18 | INFO | ==============================================================================
+2026-10-18T09:59:18 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18T09:59:18 | INFO | Run ID: TR-20261018-D4EBB0
+2026-10-18T09:59:18 | INFO | Batch ID: BATCH-20261018-D702AB
+2026-10-18T09:59:18 | INFO | Start Timestamp: 2026-10-18T01:59:18+00:00
+2026-10-18T09:59:18 | INFO | Code Version: 1.0.0 | Rules Version: 1.0.0
+2026-10-18T09:59:21 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18T09:59:21 | ERROR | Transformation failed
+Traceback (most recent call last):
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 677, in run_transformation
+    paint, datasets["paint_analysis"], rules_applied["paint_analysis"] = transform_paint_analysis(
+                                                                         ~~~~~~~~~~~~~~~~~~~~~~~~^
+        paint_raw, batch_id, quarantine
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 582, in transform_paint_analysis
+    cleaned = clean_text(value)
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 262, in clean_text
+    if pd.isna(value):
+       ~~~~~~~^^^^^^^
+ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18T09:59:21 | INFO | Run Metadata:
+2026-10-18T09:59:21 | INFO |   Parent Run ID: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18T09:59:21 | INFO |   Batch Window: Full available source data
+2026-10-18T09:59:21 | INFO |   Tables: products, sales, paint_analysis
+2026-10-18T09:59:21 | INFO |   Dataset Metrics: {"products": {"records_read": 579, "records_output": 0, "records_rejected": 579, "records_modified": 0}, "sales": {"records_read": 796, "records_output": 796, "records_rejected": 0, "records_modified": 0}, "paint_analysis": {"records_read": 0, "records_output": 0, "records_rejected": 0, "records_modified": 0}}
+2026-10-18T09:59:21 | INFO |   Rules Applied: {"products": ["C-01", "C-02", "C-03", "C-04"], "sales": ["C-01", "C-02", "C-03", "C-04", "C-05", "C-06", "Sales source did not provide sales_id; duplicate check skipped"]}
+2026-10-18T09:59:21 | INFO |   Validation Results: {}
+2026-10-18T09:59:21 | INFO |   Error Code: TRANSFORMATION_FAILED
+2026-10-18T09:59:21 | INFO |   Log Retention Days (policy): 30
+2026-10-18T09:59:21 | INFO |   Transformation Log: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\logs\transformation.log
+2026-10-18T09:59:21 | INFO |   Quarantine File: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\Transformation\output\quarantine.csv
+2026-10-18T09:59:21 | INFO | End Timestamp: 2026-10-18T01:59:21+00:00
+2026-10-18T09:59:21 | INFO | Duration: 3.145 seconds
+2026-10-18T09:59:21 | INFO | Total Records: read=1375 | output=796 | modified=0 | rejected=579
+2026-10-18T09:59:21 | INFO | Error Message / Code: ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18T09:59:21 | INFO | ==============================================================================
+2026-10-18 10:01:45 | INFO | ==============================================================================
+2026-10-18 10:01:45 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:01:45 | INFO | Run ID: TR-20261018-8E1B06
+2026-10-18 10:01:45 | INFO | Batch ID: BATCH-20261018-3405A8
+2026-10-18 10:01:45 | INFO | Start Timestamp: 2026-10-18T02:01:45+00:00
+2026-10-18 10:01:45 | INFO | Code Version: 1.0.0 | Rules Version: 1.0.0
+2026-10-18 10:01:48 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:01:48 | ERROR | Transformation stopped: ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18 10:01:48 | INFO | Summary:
+2026-10-18 10:01:48 | INFO |   Status: FAILED
+2026-10-18 10:01:48 | INFO |   Records: read=1375, output=796, modified=0, rejected=579
+2026-10-18 10:01:48 | INFO |   products: read=579, output=0, modified=0, rejected=579
+2026-10-18 10:01:48 | INFO |   sales: read=796, output=796, modified=0, rejected=0
+2026-10-18 10:01:48 | INFO |   paint_analysis: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:01:48 | INFO |   Quarantined records: 579
+2026-10-18 10:01:48 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\Transformation\output\quarantine.csv
+2026-10-18 10:01:48 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:01:48 | INFO |   Batch window: Full available source data
+2026-10-18 10:01:48 | INFO |   Code/rules version: 1.0.0/1.0.0
+2026-10-18 10:01:48 | INFO |   Log retention policy: 30 days
+2026-10-18 10:01:48 | INFO |   Finished: 2026-10-18T02:01:48+00:00 (2.76 seconds)
+2026-10-18 10:01:48 | INFO |   Issue: ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18 10:01:48 | INFO | ============================================================
+2026-10-18 10:08:06 | INFO | ==============================================================================
+2026-10-18 10:08:06 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:08:06 | INFO | Run ID: TR-20261018-7F7E0E
+2026-10-18 10:08:06 | INFO | Batch ID: BATCH-20261018-90AD0F
+2026-10-18 10:08:06 | INFO | Start Timestamp: 2026-10-18T02:08:06+00:00
+2026-10-18 10:08:06 | INFO | Code Version: 1.0.0 | Rules Version: 1.0.0
+2026-10-18 10:08:10 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:08:10 | ERROR | Transformation stopped: ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18 10:08:10 | INFO | Summary:
+2026-10-18 10:08:10 | INFO |   Status: FAILED
+2026-10-18 10:08:10 | INFO |   Records: read=1375, output=796, modified=0, rejected=579
+2026-10-18 10:08:10 | INFO |   products: read=579, output=0, modified=0, rejected=579
+2026-10-18 10:08:10 | INFO |   sales: read=796, output=796, modified=0, rejected=0
+2026-10-18 10:08:10 | INFO |   paint_analysis: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:08:10 | INFO |   Quarantined records: 579
+2026-10-18 10:08:10 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\Transformation\output\quarantine.csv
+2026-10-18 10:08:10 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:08:10 | INFO |   Batch window: Full available source data
+2026-10-18 10:08:10 | INFO |   Code/rules version: 1.0.0/1.0.0
+2026-10-18 10:08:10 | INFO |   Log retention policy: 30 days
+2026-10-18 10:08:10 | INFO |   Finished: 2026-10-18T02:08:10+00:00 (3.54 seconds)
+2026-10-18 10:08:10 | INFO |   Issue: ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18 10:08:10 | INFO | ============================================================
+2026-10-18 10:14:28 | INFO | ==============================================================================
+2026-10-18 10:14:28 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:14:28 | INFO | Run ID: TR-20261018-E0F5B4
+2026-10-18 10:14:28 | INFO | Batch ID: BATCH-20261018-F2930F
+2026-10-18 10:14:28 | INFO | Start Timestamp: 2026-10-18T02:14:28+00:00
+2026-10-18 10:14:28 | INFO | Code Version: 1.0.0 | Rules Version: 1.0.0
+2026-10-18 10:14:31 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:14:31 | ERROR | Transformation stopped: NameError: name 'as_integer' is not defined
+2026-10-18 10:14:31 | INFO | Summary:
+2026-10-18 10:14:31 | INFO |   Status: FAILED
+2026-10-18 10:14:31 | INFO |   Records: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:14:31 | INFO |   products: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:14:31 | INFO |   sales: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:14:31 | INFO |   paint_analysis: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:14:31 | INFO |   Quarantined records: 0
+2026-10-18 10:14:31 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\Transformation\output\quarantine.csv
+2026-10-18 10:14:31 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:14:31 | INFO |   Batch window: Full available source data
+2026-10-18 10:14:31 | INFO |   Code/rules version: 1.0.0/1.0.0
+2026-10-18 10:14:31 | INFO |   Log retention policy: 30 days
+2026-10-18 10:14:31 | INFO |   Finished: 2026-10-18T02:14:31+00:00 (2.65 seconds)
+2026-10-18 10:14:31 | INFO |   Issue: NameError: name 'as_integer' is not defined
+2026-10-18 10:14:31 | INFO | ============================================================
+2026-10-18 10:15:05 | INFO | ==============================================================================
+2026-10-18 10:15:05 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:15:05 | INFO | Run ID: TR-20261018-7A6035
+2026-10-18 10:15:05 | INFO | Batch ID: BATCH-20261018-060AB1
+2026-10-18 10:15:05 | INFO | Start Timestamp: 2026-10-18T02:15:05+00:00
+2026-10-18 10:15:05 | INFO | Code Version: 1.0.0 | Rules Version: 1.0.0
+2026-10-18 10:15:07 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:15:07 | ERROR | Transformation stopped: NameError: name 'as_integer' is not defined
+2026-10-18 10:15:07 | INFO | Summary:
+2026-10-18 10:15:07 | INFO |   Status: FAILED
+2026-10-18 10:15:07 | INFO |   Records: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:15:07 | INFO |   products: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:15:07 | INFO |   sales: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:15:07 | INFO |   paint_analysis: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:15:07 | INFO |   Quarantined records: 0
+2026-10-18 10:15:07 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\Transformation\output\quarantine.csv
+2026-10-18 10:15:07 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:15:07 | INFO |   Batch window: Full available source data
+2026-10-18 10:15:07 | INFO |   Code/rules version: 1.0.0/1.0.0
+2026-10-18 10:15:07 | INFO |   Log retention policy: 30 days
+2026-10-18 10:15:07 | INFO |   Finished: 2026-10-18T02:15:07+00:00 (2.07 seconds)
+2026-10-18 10:15:07 | INFO |   Issue: NameError: name 'as_integer' is not defined
+2026-10-18 10:15:07 | INFO | ============================================================
+2026-10-18 10:18:43 | INFO | ==============================================================================
+2026-10-18 10:18:43 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:18:43 | INFO | Run ID: TR-20261018-149077
+2026-10-18 10:18:43 | INFO | Batch ID: BATCH-20261018-02C64F
+2026-10-18 10:18:43 | INFO | Start Timestamp: 2026-10-18T02:18:43+00:00
+2026-10-18 10:18:43 | INFO | Code Version: 1.0.0 | Rules Version: 1.0.0
+2026-10-18 10:18:45 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:18:45 | ERROR | Transformation stopped: ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+Traceback (most recent call last):
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 691, in run_transformation
+    paint, datasets["paint_analysis"], rules_applied["paint_analysis"] = transform_paint_analysis(
+                                                                         ~~~~~~~~~~~~~~~~~~~~~~~~^
+        paint_raw, batch_id, quarantine
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 613, in transform_paint_analysis
+    if not is_blank(row_data["paint_components"]) and not validate_json_like(row_data["paint_components"]):
+                                                          ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py", line 347, in validate_json_like
+    if pd.isna(value) or (isinstance(value, str) and not value.strip()):
+       ~~~~~~~^^^^^^^
+ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18 10:18:45 | INFO | Quarantine file updated after failure: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\Transformation\output\quarantine.csv (579 records)
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 2 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 3 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 4 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 5 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 6 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 7 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 8 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 9 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 10 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 11 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 12 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 13 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 14 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 15 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 16 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 17 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 18 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 19 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 20 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 21 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 22 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 23 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 24 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 25 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 26 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 27 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 28 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 29 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 30 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 31 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 32 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 33 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 34 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 35 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 36 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 37 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 38 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 39 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 40 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 41 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 42 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 43 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 44 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 45 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 46 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 47 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 48 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 49 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 50 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 51 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 52 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 53 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 54 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 55 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 56 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 57 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 58 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 59 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 60 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 61 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 62 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 63 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 64 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 65 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 66 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 67 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 68 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 69 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 70 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 71 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 72 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 73 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 74 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 75 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 76 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 77 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 78 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 79 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 80 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 81 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 82 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 83 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 84 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 85 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 86 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 87 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 88 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 89 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 90 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 91 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 92 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 93 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 94 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 95 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 96 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 97 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 98 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 99 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 100 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 101 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 102 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 103 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 104 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 105 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 106 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 107 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 108 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 109 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 110 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 111 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 112 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 113 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 114 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 115 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 116 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 117 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 118 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 119 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 120 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 121 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 122 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 123 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 124 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 125 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 126 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 127 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 128 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 129 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 130 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 131 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 132 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 133 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 134 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 135 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 136 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 137 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 138 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 139 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 140 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 141 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 142 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 143 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 144 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 145 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 146 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 147 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 148 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 149 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 150 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 151 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 152 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 153 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 154 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 155 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 156 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 157 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 158 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 159 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 160 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 161 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 162 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 163 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 164 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 165 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 166 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 167 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 168 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 169 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 170 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 171 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 172 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 173 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 174 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 175 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 176 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 177 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 178 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 179 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 180 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 181 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 182 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 183 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 184 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 185 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 186 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 187 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 188 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 189 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 190 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 191 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 192 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 193 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 194 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 195 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 196 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 197 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 198 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 199 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 200 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 201 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 202 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 203 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 204 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 205 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 206 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 207 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 208 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 209 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 210 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 211 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 212 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 213 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 214 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 215 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 216 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 217 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 218 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 219 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 220 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 221 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 222 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 223 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 224 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 225 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 226 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 227 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 228 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 229 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 230 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 231 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 232 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 233 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 234 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 235 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 236 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 237 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 238 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 239 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 240 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 241 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 242 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 243 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 244 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 245 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 246 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 247 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 248 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 249 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 250 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 251 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 252 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 253 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 254 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 255 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 256 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 257 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 258 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 259 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 260 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 261 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 262 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 263 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 264 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 265 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 266 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 267 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 268 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 269 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 270 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 271 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 272 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 273 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 274 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 275 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 276 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 277 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 278 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 279 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 280 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 281 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 282 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 283 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 284 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 285 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 286 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 287 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 288 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 289 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 290 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 291 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 292 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 293 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 294 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 295 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 296 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 297 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 298 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 299 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 300 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 301 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 302 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 303 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 304 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 305 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 306 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 307 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 308 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 309 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 310 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 311 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 312 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 313 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 314 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 315 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 316 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 317 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 318 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 319 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 320 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 321 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 322 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 323 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 324 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 325 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 326 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 327 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 328 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 329 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 330 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 331 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 332 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 333 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 334 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 335 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 336 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 337 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 338 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 339 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 340 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 341 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 342 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 343 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 344 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 345 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 346 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 347 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 348 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 349 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 350 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 351 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 352 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 353 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 354 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 355 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 356 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 357 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 358 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 359 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 360 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 361 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 362 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 363 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 364 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 365 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 366 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 367 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 368 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 369 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 370 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 371 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 372 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 373 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 374 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 375 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 376 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 377 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 378 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 379 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 380 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 381 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 382 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 383 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 384 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 385 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 386 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 387 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 388 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 389 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 390 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 391 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 392 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 393 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 394 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 395 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 396 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 397 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 398 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 399 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 400 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 401 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 402 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 403 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 404 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 405 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 406 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 407 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 408 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 409 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 410 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 411 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 412 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 413 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 414 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 415 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 416 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 417 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 418 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 419 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 420 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 421 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 422 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 423 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 424 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 425 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 426 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 427 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 428 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 429 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 430 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 431 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 432 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 433 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 434 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 435 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 436 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 437 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 438 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 439 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 440 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 441 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 442 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 443 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 444 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 445 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 446 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 447 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 448 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 449 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 450 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 451 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 452 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 453 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 454 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 455 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 456 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 457 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 458 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 459 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 460 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 461 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 462 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 463 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 464 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 465 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 466 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 467 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 468 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 469 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 470 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 471 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 472 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 473 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 474 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 475 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 476 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 477 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 478 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 479 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 480 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 481 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 482 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 483 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 484 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 485 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 486 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 487 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 488 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 489 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 490 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 491 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 492 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 493 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 494 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 495 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 496 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 497 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 498 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 499 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 500 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 501 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 502 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 503 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 504 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 505 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 506 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 507 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 508 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 509 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 510 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 511 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 512 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 513 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 514 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 515 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 516 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 517 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 518 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 519 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 520 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 521 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 522 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 523 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 524 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 525 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 526 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 527 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 528 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 529 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 530 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 531 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 532 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 533 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 534 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 535 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 536 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 537 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 538 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 539 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 540 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 541 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 542 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 543 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 544 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 545 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 546 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 547 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 548 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 549 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 550 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 551 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 552 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 553 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 554 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 555 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 556 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 557 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 558 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 559 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 560 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 561 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 562 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 563 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 564 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 565 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 566 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 567 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 568 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 569 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 570 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 571 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 572 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 573 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 574 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 575 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 576 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 577 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 578 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 579 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Dataset: products | Source row: 580 | Rule ID: C-02 | Reason: Missing required product identifier or product name
+2026-10-18 10:18:45 | INFO | Summary:
+2026-10-18 10:18:45 | INFO |   Status: FAILED
+2026-10-18 10:18:45 | INFO |   Records: read=1375, output=796, modified=0, rejected=579
+2026-10-18 10:18:45 | INFO |   products: read=579, output=0, modified=0, rejected=579
+2026-10-18 10:18:45 | INFO |   sales: read=796, output=796, modified=0, rejected=0
+2026-10-18 10:18:45 | INFO |   paint_analysis: read=0, output=0, modified=0, rejected=0
+2026-10-18 10:18:45 | INFO |   Quarantined records: 579
+2026-10-18 10:18:45 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\Transformation\output\quarantine.csv
+2026-10-18 10:18:45 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:18:45 | INFO |   Batch window: Full available source data
+2026-10-18 10:18:45 | INFO |   Code/rules version: 1.0.0/1.0.0
+2026-10-18 10:18:45 | INFO |   Log retention policy: 30 days
+2026-10-18 10:18:45 | INFO |   Finished: 2026-10-18T02:18:45+00:00 (2.31 seconds)
+2026-10-18 10:18:45 | INFO |   Issue: ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+2026-10-18 10:18:45 | INFO | ============================================================
+2026-10-18 10:39:01 | INFO | ==============================================================================
+2026-10-18 10:39:01 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:39:01 | INFO | Run ID: TR-20261018-004E4F
+2026-10-18 10:39:01 | INFO | Batch ID: BATCH-20261018-D463FE
+2026-10-18 10:39:01 | INFO | Start Timestamp: 2026-10-18T02:39:01+00:00
+2026-10-18 10:39:01 | INFO | Code Version: 1.1.0 | Rules Version: 1.1.0
+2026-10-18 10:39:04 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:39:05 | INFO | Dataset Summary:
+2026-10-18 10:39:05 | INFO |   products | read=579 | output=1 | modified=1 | rejected=578
+2026-10-18 10:39:05 | INFO |   products rules applied: C-01, C-02, C-03
+2026-10-18 10:39:05 | INFO |   sales | read=796 | output=0 | modified=0 | rejected=796
+2026-10-18 10:39:05 | INFO |   sales rules applied: C-01, C-02, C-03, C-05, C-06
+2026-10-18 10:39:05 | INFO |   paint_analysis | read=7 | output=7 | modified=7 | rejected=0
+2026-10-18 10:39:05 | INFO |   paint_analysis rules applied: C-01, C-04, C-06, C-07, C-08
+2026-10-18 10:39:05 | INFO | Validation Results: {"products.schema": "PASS", "products.record_reconciliation": "PASS", "sales.schema": "PASS", "sales.record_reconciliation": "PASS", "paint_analysis.schema": "PASS", "paint_analysis.record_reconciliation": "PASS", "products.generated_ids": "PASS", "sales.generated_ids": "PASS", "rejection_rate": "WARNING"}
+2026-10-18 10:39:05 | INFO | Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv (1374 records)
+2026-10-18 10:39:05 | INFO | Rejection Rate: 99.421%
+2026-10-18 10:39:05 | INFO | Transformation Status: MANUAL_REVIEW
+2026-10-18 10:39:05 | INFO | Summary:
+2026-10-18 10:39:05 | INFO |   Status: MANUAL_REVIEW
+2026-10-18 10:39:05 | INFO |   Records: read=1382, output=8, modified=8, rejected=1374
+2026-10-18 10:39:05 | INFO |   products: read=579, output=1, modified=1, rejected=578
+2026-10-18 10:39:05 | INFO |   sales: read=796, output=0, modified=0, rejected=796
+2026-10-18 10:39:05 | INFO |   paint_analysis: read=7, output=7, modified=7, rejected=0
+2026-10-18 10:39:05 | INFO |   Validation: rejection_rate
+2026-10-18 10:39:05 | INFO |   Quarantined records: 1374
+2026-10-18 10:39:05 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv
+2026-10-18 10:39:05 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:39:05 | INFO |   Batch window: Full available source data
+2026-10-18 10:39:05 | INFO |   Code/rules version: 1.1.0/1.1.0
+2026-10-18 10:39:05 | INFO |   Log retention policy: 30 days
+2026-10-18 10:39:05 | INFO |   Finished: 2026-10-18T02:39:05+00:00 (3.51 seconds)
+2026-10-18 10:39:05 | INFO | ============================================================
+2026-10-18 10:44:27 | INFO | ==============================================================================
+2026-10-18 10:44:27 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:44:27 | INFO | Run ID: TR-20261018-581AC8
+2026-10-18 10:44:27 | INFO | Batch ID: BATCH-20261018-243A37
+2026-10-18 10:44:27 | INFO | Start Timestamp: 2026-10-18T02:44:27+00:00
+2026-10-18 10:44:27 | INFO | Code Version: 1.2.0 | Rules Version: 1.2.0
+2026-10-18 10:44:30 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:44:30 | INFO | Flexible header mapping: {"product": "product_name", "unit_purchase_price": "unit_purchase_price", "stocks": "stocks", "category": "category", "brand": "brand", "est_price_php": "estimated_price_php"}
+2026-10-18 10:44:30 | INFO | Flexible header mapping: {"date": "sales_date", "brand": "brand", "product": "product", "category": "category", "units_sold": "quantity", "season": "season"}
+2026-10-18 10:44:30 | INFO | Unmapped source headers retained for reference: ['total_sales_php']
+2026-10-18 10:44:30 | INFO | Flexible header mapping: {"color_hex": "color", "rgb": "rgb", "paint_components": "paint_components", "analysis_date": "analysis_date"}
+2026-10-18 10:44:30 | INFO | Dataset Summary:
+2026-10-18 10:44:30 | INFO |   products | read=579 | output=1 | modified=1 | rejected=578
+2026-10-18 10:44:30 | INFO |   products rules applied: C-01, C-02, C-03
+2026-10-18 10:44:30 | INFO |   sales | read=796 | output=0 | modified=0 | rejected=796
+2026-10-18 10:44:30 | INFO |   sales rules applied: C-01, C-02, C-03, C-05, C-06
+2026-10-18 10:44:30 | INFO |   paint_analysis | read=7 | output=7 | modified=7 | rejected=0
+2026-10-18 10:44:30 | INFO |   paint_analysis rules applied: C-01, C-04, C-06, C-07, C-08
+2026-10-18 10:44:30 | INFO | Validation Results: {"products.schema": "PASS", "products.record_reconciliation": "PASS", "sales.schema": "PASS", "sales.record_reconciliation": "PASS", "paint_analysis.schema": "PASS", "paint_analysis.record_reconciliation": "PASS", "products.generated_ids": "PASS", "sales.generated_ids": "PASS", "rejection_rate": "WARNING"}
+2026-10-18 10:44:30 | INFO | Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv (1374 records)
+2026-10-18 10:44:30 | INFO | Rejection Rate: 99.421%
+2026-10-18 10:44:30 | INFO | Transformation Status: MANUAL_REVIEW
+2026-10-18 10:44:30 | INFO | Summary:
+2026-10-18 10:44:30 | INFO |   Status: MANUAL_REVIEW
+2026-10-18 10:44:30 | INFO |   Records: read=1382, output=8, modified=8, rejected=1374
+2026-10-18 10:44:30 | INFO |   products: read=579, output=1, modified=1, rejected=578
+2026-10-18 10:44:30 | INFO |   sales: read=796, output=0, modified=0, rejected=796
+2026-10-18 10:44:30 | INFO |   paint_analysis: read=7, output=7, modified=7, rejected=0
+2026-10-18 10:44:30 | INFO |   Validation: rejection_rate
+2026-10-18 10:44:30 | INFO |   Quarantined records: 1374
+2026-10-18 10:44:30 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv
+2026-10-18 10:44:30 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:44:30 | INFO |   Batch window: Full available source data
+2026-10-18 10:44:30 | INFO |   Code/rules version: 1.2.0/1.2.0
+2026-10-18 10:44:30 | INFO |   Log retention policy: 30 days
+2026-10-18 10:44:30 | INFO |   Finished: 2026-10-18T02:44:30+00:00 (3.33 seconds)
+2026-10-18 10:44:30 | INFO | ============================================================
+2026-10-18 10:54:10 | INFO | ==============================================================================
+2026-10-18 10:54:10 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:54:10 | INFO | Run ID: TR-20261018-27BDCD
+2026-10-18 10:54:10 | INFO | Batch ID: BATCH-20261018-EFD554
+2026-10-18 10:54:10 | INFO | Start Timestamp: 2026-10-18T02:54:10+00:00
+2026-10-18 10:54:10 | INFO | Code Version: 1.3.0 | Rules Version: 1.3.0
+2026-10-18 10:54:12 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:54:12 | INFO | Flexible header mapping: {"product": "product_name", "unit_purchase_price": "unit_purchase_price", "stocks": "stocks", "category": "category", "brand": "brand", "est_price_php": "estimated_price_php"}
+2026-10-18 10:54:12 | INFO | Flexible header mapping: {"date": "sales_date", "brand": "brand", "product": "product", "category": "category", "units_sold": "quantity", "season": "season", "total_sales_php": "unit_sold"}
+2026-10-18 10:54:13 | INFO | Flexible header mapping: {"color_hex": "color", "rgb": "rgb", "paint_components": "paint_components", "analysis_date": "analysis_date"}
+2026-10-18 10:54:13 | INFO | Dataset Summary:
+2026-10-18 10:54:13 | INFO |   products | read=579 | output=1 | modified=1 | rejected=578
+2026-10-18 10:54:13 | INFO |   products rules applied: C-01, C-02, C-03
+2026-10-18 10:54:13 | INFO |   sales | read=796 | output=0 | modified=0 | rejected=796
+2026-10-18 10:54:13 | INFO |   sales rules applied: C-01, C-02, C-03, C-05, C-06
+2026-10-18 10:54:13 | INFO |   paint_analysis | read=7 | output=7 | modified=7 | rejected=0
+2026-10-18 10:54:13 | INFO |   paint_analysis rules applied: C-01, C-04, C-06, C-07, C-08
+2026-10-18 10:54:13 | INFO | Validation Results: {"products.schema": "PASS", "products.record_reconciliation": "PASS", "sales.schema": "PASS", "sales.record_reconciliation": "PASS", "paint_analysis.schema": "PASS", "paint_analysis.record_reconciliation": "PASS", "products.generated_ids": "PASS", "sales.generated_ids": "PASS", "rejection_rate": "WARNING"}
+2026-10-18 10:54:13 | INFO | Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv (1374 records)
+2026-10-18 10:54:13 | WARNING | Rejection breakdown | dataset=products | rule=C-03 | count=578 | reason=Invalid integer value in stocks
+2026-10-18 10:54:13 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=796 | reason=Sales product does not match a Product record
+2026-10-18 10:54:13 | INFO | Rejection Rate: 99.421%
+2026-10-18 10:54:13 | INFO | Transformation Status: MANUAL_REVIEW
+2026-10-18 10:54:13 | INFO | Summary:
+2026-10-18 10:54:13 | INFO |   Status: MANUAL_REVIEW
+2026-10-18 10:54:13 | INFO |   Records: read=1382, output=8, modified=8, rejected=1374
+2026-10-18 10:54:13 | INFO |   products: read=579, output=1, modified=1, rejected=578
+2026-10-18 10:54:13 | INFO |   sales: read=796, output=0, modified=0, rejected=796
+2026-10-18 10:54:13 | INFO |   paint_analysis: read=7, output=7, modified=7, rejected=0
+2026-10-18 10:54:13 | INFO |   Validation: rejection_rate
+2026-10-18 10:54:13 | INFO |   Quarantined records: 1374
+2026-10-18 10:54:13 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv
+2026-10-18 10:54:13 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:54:13 | INFO |   Batch window: Full available source data
+2026-10-18 10:54:13 | INFO |   Code/rules version: 1.3.0/1.3.0
+2026-10-18 10:54:13 | INFO |   Log retention policy: 30 days
+2026-10-18 10:54:13 | INFO |   Finished: 2026-10-18T02:54:13+00:00 (2.85 seconds)
+2026-10-18 10:54:13 | INFO | ============================================================
+2026-10-18 10:59:03 | INFO | ==============================================================================
+2026-10-18 10:59:03 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 10:59:03 | INFO | Run ID: TR-20261018-0BA06C
+2026-10-18 10:59:03 | INFO | Batch ID: BATCH-20261018-9B507E
+2026-10-18 10:59:03 | INFO | Start Timestamp: 2026-10-18T02:59:03+00:00
+2026-10-18 10:59:03 | INFO | Code Version: 1.4.0 | Rules Version: 1.4.0
+2026-10-18 10:59:06 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 10:59:06 | INFO | Flexible header mapping: {"product": "product_name", "unit_purchase_price": "unit_purchase_price", "stocks": "stocks", "category": "category", "brand": "brand", "est_price_php": "estimated_price_php"}
+2026-10-18 10:59:06 | INFO | Flexible header mapping: {"date": "sales_date", "brand": "brand", "product": "product", "category": "category", "units_sold": "quantity", "season": "season", "total_sales_php": "unit_sold"}
+2026-10-18 10:59:06 | INFO | Flexible header mapping: {"color_hex": "color", "rgb": "rgb", "paint_components": "paint_components", "analysis_date": "analysis_date"}
+2026-10-18 10:59:06 | INFO | Dataset Summary:
+2026-10-18 10:59:07 | INFO |   products | read=579 | output=1 | modified=1 | rejected=578
+2026-10-18 10:59:07 | INFO |   products rules applied: C-01, C-02, C-03
+2026-10-18 10:59:07 | INFO |   sales | read=796 | output=0 | modified=0 | rejected=796
+2026-10-18 10:59:07 | INFO |   sales rules applied: C-01, C-02, C-03, C-05, C-06
+2026-10-18 10:59:07 | INFO |   paint_analysis | read=7 | output=7 | modified=7 | rejected=0
+2026-10-18 10:59:07 | INFO |   paint_analysis rules applied: C-01, C-04, C-06, C-07, C-08
+2026-10-18 10:59:07 | INFO | Validation Results: {"products.schema": "PASS", "products.record_reconciliation": "PASS", "sales.schema": "PASS", "sales.record_reconciliation": "PASS", "paint_analysis.schema": "PASS", "paint_analysis.record_reconciliation": "PASS", "products.generated_ids": "PASS", "sales.generated_ids": "PASS", "rejection_rate": "WARNING"}
+2026-10-18 10:59:07 | INFO | Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv (1374 records)
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=products | rule=C-03 | count=578 | reason=Invalid integer value in stocks
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'ACX-00 Acreex White GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'Acry-Color AC-90 Raw Sienna LT' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'B-1250 Clear Gloss Lacquer LT' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'B-1490 Latex Lampblack LT' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'B-2570 RG Spanish Red GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'B-710 Permacoat Gloss White GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'B-715 Permacoat Semi-Gloss White GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=38 | reason=Sales product 'B-800 FWE Flatwall White GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=70 | reason=Sales product 'CS-88 Solo Flat White Latex GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=37 | reason=Sales product 'CS-99 Solo Gloss White Latex GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'DR-5 Durax Black GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'DR-6 Durax White GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=37 | reason=Sales product 'DV-300 Flat Wall Enamel White GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'E-6200 WB EP Gray GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'Oil Tinting Color TC-60 Lamp Black 1/4 Liter' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'Omega Paint Brush 4 in' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'Omega Paint Tray Black-Plastic' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=2 | reason=Sales product 'Omega Putty Knife Big' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=1 | reason=Sales product 'R-25 Acrylic Thinner LT' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'SK-1 Mondo Skimcoat 20KG' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=36 | reason=Sales product 'WPU-200 Weber Jet Black GAL' does not match any product name after normalization
+2026-10-18 10:59:07 | WARNING | Rejection breakdown | dataset=sales | rule=C-05 | count=71 | reason=Sales product 'WU-001 2K Clearcoat LT' does not match any product name after normalization
+2026-10-18 10:59:07 | INFO | Rejection Rate: 99.421%
+2026-10-18 10:59:07 | INFO | Transformation Status: MANUAL_REVIEW
+2026-10-18 10:59:07 | INFO | Summary:
+2026-10-18 10:59:07 | INFO |   Status: MANUAL_REVIEW
+2026-10-18 10:59:07 | INFO |   Records: read=1382, output=8, modified=8, rejected=1374
+2026-10-18 10:59:07 | INFO |   products: read=579, output=1, modified=1, rejected=578
+2026-10-18 10:59:07 | INFO |   sales: read=796, output=0, modified=0, rejected=796
+2026-10-18 10:59:07 | INFO |   paint_analysis: read=7, output=7, modified=7, rejected=0
+2026-10-18 10:59:07 | INFO |   Validation: rejection_rate
+2026-10-18 10:59:07 | INFO |   Quarantined records: 1374
+2026-10-18 10:59:07 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv
+2026-10-18 10:59:07 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 10:59:07 | INFO |   Batch window: Full available source data
+2026-10-18 10:59:07 | INFO |   Code/rules version: 1.4.0/1.4.0
+2026-10-18 10:59:07 | INFO |   Log retention policy: 30 days
+2026-10-18 10:59:07 | INFO |   Finished: 2026-10-18T02:59:07+00:00 (3.22 seconds)
+2026-10-18 10:59:07 | INFO | ============================================================
+2026-10-18 11:02:17 | INFO | ==============================================================================
+2026-10-18 11:02:17 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 11:02:17 | INFO | Run ID: TR-20261018-1E7698
+2026-10-18 11:02:17 | INFO | Batch ID: BATCH-20261018-9DD72F
+2026-10-18 11:02:17 | INFO | Start Timestamp: 2026-10-18T03:02:17+00:00
+2026-10-18 11:02:17 | INFO | Code Version: 1.3.0 | Rules Version: 1.3.0
+2026-10-18 11:02:19 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 11:02:19 | INFO | Flexible header mapping: {"product": "product_name", "unit_purchase_price": "unit_purchase_price", "stocks": "stocks", "category": "category", "brand": "brand", "est_price_php": "estimated_price_php"}
+2026-10-18 11:02:19 | INFO | Flexible header mapping: {"date": "sales_date", "brand": "brand", "product": "product", "category": "category", "units_sold": "quantity", "season": "season", "total_sales_php": "unit_sold"}
+2026-10-18 11:02:19 | INFO | Flexible header mapping: {"color_hex": "color", "rgb": "rgb", "paint_components": "paint_components", "analysis_date": "analysis_date"}
+2026-10-18 11:02:19 | INFO | Dataset Summary:
+2026-10-18 11:02:19 | INFO |   products | read=579 | output=579 | modified=98 | rejected=0
+2026-10-18 11:02:19 | INFO |   products rules applied: C-01, C-02, C-03
+2026-10-18 11:02:19 | INFO |   sales | read=796 | output=796 | modified=796 | rejected=0
+2026-10-18 11:02:19 | INFO |   sales rules applied: C-01, C-02, C-03, C-05, C-06
+2026-10-18 11:02:19 | INFO |   paint_analysis | read=7 | output=7 | modified=7 | rejected=0
+2026-10-18 11:02:19 | INFO |   paint_analysis rules applied: C-01, C-04, C-06, C-07, C-08
+2026-10-18 11:02:19 | INFO | Validation Results: {"products.schema": "PASS", "products.record_reconciliation": "PASS", "sales.schema": "PASS", "sales.record_reconciliation": "PASS", "paint_analysis.schema": "PASS", "paint_analysis.record_reconciliation": "PASS", "products.generated_ids": "PASS", "sales.generated_ids": "PASS", "rejection_rate": "PASS"}
+2026-10-18 11:02:19 | INFO | Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv (0 records)
+2026-10-18 11:02:19 | INFO | Rejection breakdown: no records quarantined
+2026-10-18 11:02:19 | INFO | Rejection Rate: 0.000%
+2026-10-18 11:02:19 | INFO | Transformation Status: SUCCESS
+2026-10-18 11:02:19 | INFO | Summary:
+2026-10-18 11:02:19 | INFO |   Status: SUCCESS
+2026-10-18 11:02:19 | INFO |   Records: read=1382, output=1382, modified=901, rejected=0
+2026-10-18 11:02:19 | INFO |   products: read=579, output=579, modified=98, rejected=0
+2026-10-18 11:02:19 | INFO |   sales: read=796, output=796, modified=796, rejected=0
+2026-10-18 11:02:19 | INFO |   paint_analysis: read=7, output=7, modified=7, rejected=0
+2026-10-18 11:02:19 | INFO |   Validation: All checks passed
+2026-10-18 11:02:19 | INFO |   Quarantined records: 0
+2026-10-18 11:02:19 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv
+2026-10-18 11:02:19 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 11:02:19 | INFO |   Batch window: Full available source data
+2026-10-18 11:02:19 | INFO |   Code/rules version: 1.3.0/1.3.0
+2026-10-18 11:02:19 | INFO |   Log retention policy: 30 days
+2026-10-18 11:02:19 | INFO |   Finished: 2026-10-18T03:02:19+00:00 (2.29 seconds)
+2026-10-18 11:02:19 | INFO | ============================================================
+2026-10-18 11:08:59 | INFO | ==============================================================================
+2026-10-18 11:08:59 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 11:08:59 | INFO | Run ID: TR-20261018-3E66EB
+2026-10-18 11:08:59 | INFO | Batch ID: BATCH-20261018-6E8499
+2026-10-18 11:08:59 | INFO | Start Timestamp: 2026-10-18T03:08:59+00:00
+2026-10-18 11:08:59 | INFO | Code Version: 1.4.0 | Rules Version: 1.4.0
+2026-10-18 11:09:02 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 11:09:02 | INFO | Source profile | dataset=products | rows=579 | columns=6 | headers=['Product', 'Unit Purchase Price', 'Est. Price (PHP)', 'Stocks', 'Category', 'Brand']
+2026-10-18 11:09:02 | INFO | Source profile | dataset=products | blank_or_missing_by_column={"Category": 28, "Brand": 26}
+2026-10-18 11:09:02 | INFO | Source profile | dataset=sales | rows=796 | columns=7 | headers=['Date', 'Brand', 'Product', 'Category', 'Total Sales (PHP)', 'Units Sold', 'Season']
+2026-10-18 11:09:02 | INFO | Source profile | dataset=sales | blank_or_missing_by_column={}
+2026-10-18 11:09:02 | INFO | Source profile | dataset=paint_analysis | rows=7 | columns=4 | headers=['color_hex', 'rgb', 'paint_components', 'analysis_date']
+2026-10-18 11:09:02 | INFO | Source profile | dataset=paint_analysis | blank_or_missing_by_column={}
+2026-10-18 11:09:02 | INFO | Flexible header mapping: {"product": "product_name", "unit_purchase_price": "unit_purchase_price", "stocks": "stocks", "category": "category", "brand": "brand", "est_price_php": "estimated_price_php"}
+2026-10-18 11:09:02 | INFO | Flexible header mapping: {"date": "sales_date", "brand": "brand", "product": "product", "category": "category", "units_sold": "quantity", "season": "season", "total_sales_php": "unit_sold"}
+2026-10-18 11:09:02 | INFO | Flexible header mapping: {"color_hex": "color", "rgb": "rgb", "paint_components": "paint_components", "analysis_date": "analysis_date"}
+2026-10-18 11:09:02 | INFO | Source profile | dataset=products_transformed | rows=579 | columns=7 | headers=['product_id', 'product_name', 'unit_purchase_price', 'estimated_price_php', 'stocks', 'category', 'brand']
+2026-10-18 11:09:02 | INFO | Source profile | dataset=products_transformed | blank_or_missing_by_column={"category": 28, "brand": 26}
+2026-10-18 11:09:02 | INFO | Source profile | dataset=sales_transformed | rows=796 | columns=8 | headers=['sales_id', 'brand', 'product', 'category', 'sales_date', 'quantity', 'unit_sold', 'season']
+2026-10-18 11:09:02 | INFO | Source profile | dataset=sales_transformed | blank_or_missing_by_column={}
+2026-10-18 11:09:02 | INFO | Source profile | dataset=paint_analysis_transformed | rows=7 | columns=5 | headers=['id', 'color', 'rgb', 'paint_components', 'analysis_date']
+2026-10-18 11:09:02 | INFO | Source profile | dataset=paint_analysis_transformed | blank_or_missing_by_column={"id": 7}
+2026-10-18 11:09:02 | INFO | Transformation operations applied: canonical header mapping; text trimming; decimal conversion for prices/sales amounts; integer conversion for sales quantity; permissive stock cleaning (numeric stock values become integers, other nonblank values are preserved); date standardization; normalized product-reference matching; RGB and JSON-like component validation; generated Product/Sales IDs; rejected records written to quarantine.
+2026-10-18 11:09:02 | INFO | Dataset Summary:
+2026-10-18 11:09:02 | INFO |   products | read=579 | output=579 | modified=98 | rejected=0
+2026-10-18 11:09:02 | INFO |   products rules applied: C-01, C-02, C-03
+2026-10-18 11:09:02 | INFO |   sales | read=796 | output=796 | modified=796 | rejected=0
+2026-10-18 11:09:02 | INFO |   sales rules applied: C-01, C-02, C-03, C-05, C-06
+2026-10-18 11:09:02 | INFO |   paint_analysis | read=7 | output=7 | modified=7 | rejected=0
+2026-10-18 11:09:02 | INFO |   paint_analysis rules applied: C-01, C-04, C-06, C-07, C-08
+2026-10-18 11:09:02 | INFO | Validation Results: {"products.schema": "PASS", "products.record_reconciliation": "PASS", "sales.schema": "PASS", "sales.record_reconciliation": "PASS", "paint_analysis.schema": "PASS", "paint_analysis.record_reconciliation": "PASS", "products.generated_ids": "PASS", "sales.generated_ids": "PASS", "rejection_rate": "PASS"}
+2026-10-18 11:09:02 | INFO | Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv (0 records)
+2026-10-18 11:09:02 | INFO | Rejection breakdown: no records quarantined
+2026-10-18 11:09:02 | INFO | Rejection Rate: 0.000%
+2026-10-18 11:09:02 | INFO | Transformation Status: SUCCESS
+2026-10-18 11:09:02 | INFO | Summary:
+2026-10-18 11:09:02 | INFO |   Status: SUCCESS
+2026-10-18 11:09:02 | INFO |   Records: read=1382, output=1382, modified=901, rejected=0
+2026-10-18 11:09:02 | INFO |   products: read=579, output=579, modified=98, rejected=0
+2026-10-18 11:09:02 | INFO |   sales: read=796, output=796, modified=796, rejected=0
+2026-10-18 11:09:02 | INFO |   paint_analysis: read=7, output=7, modified=7, rejected=0
+2026-10-18 11:09:02 | INFO |   Validation: All checks passed
+2026-10-18 11:09:02 | INFO |   Quarantined records: 0
+2026-10-18 11:09:02 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv
+2026-10-18 11:09:02 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 11:09:02 | INFO |   Batch window: Full available source data
+2026-10-18 11:09:02 | INFO |   Code/rules version: 1.4.0/1.4.0
+2026-10-18 11:09:02 | INFO |   Log retention policy: 30 days
+2026-10-18 11:09:02 | INFO |   Finished: 2026-10-18T03:09:02+00:00 (3.64 seconds)
+2026-10-18 11:09:02 | INFO | ============================================================

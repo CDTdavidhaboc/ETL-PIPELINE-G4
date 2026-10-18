@@ -1,0 +1,904 @@
+============================================================
+[2026-10-11 09:36:35] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+[2026-10-11 09:36:35] --- Extracting CSV: All Products - Cleaned.csv ---
+[2026-10-11 09:36:35] ✅ Complete. Rows: 579 | Columns: ['Product', 'Unit Purchase Price', 'Est. Price (PHP)', 'Stocks', 'Category', 'Brand'] | Elapsed: 0.014s
+[2026-10-11 09:36:35] --- Extracting CSV: GPC_Sales - make equal.csv ---
+[2026-10-11 09:36:35] ✅ Complete. Rows: 796 | Columns: ['Date', 'Brand', 'Product', 'Category', 'Total Sales (PHP)', 'Units Sold', 'Season'] | Elapsed: 0.005s
+============================================================
+[2026-10-11 09:36:35] 🏁 BATCH COMPLETE. Total time: 0.021s
+============================================================
+============================================================
+[2026-10-11 09:55:04] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-11 09:55:04] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261011-B2A973
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-11 09:55:04
+  Extraction End Timestamp  : ends at: 2026-10-11 09:55:04
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.012s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-11 09:55:04] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261011-607DD8
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-11 09:55:04
+  Extraction End Timestamp  : ends at: 2026-10-11 09:55:04
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.004s
+======================================================================
+
+
+============================================================
+[2026-10-11 09:55:04] 🏁 BATCH COMPLETE. Total time: 0.019s
+============================================================
+
+============================================================
+[2026-10-11 09:56:26] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-11 09:56:26] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261011-C6617C
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-11 09:56:26
+  Extraction End Timestamp  : ends at: 2026-10-11 09:56:26
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-11 09:56:26] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261011-4B75D6
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-11 09:56:26
+  Extraction End Timestamp  : ends at: 2026-10-11 09:56:26
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.002s
+======================================================================
+
+============================================================
+[2026-10-18 09:54:51] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 09:54:51] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-A341C1
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 09:54:51
+  Extraction End Timestamp  : ends at: 2026-10-18 09:54:51
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.014s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 09:54:51] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-4601AA
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 09:54:51
+  Extraction End Timestamp  : ends at: 2026-10-18 09:54:51
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.006s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 09:55:01] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-1A8134
+  Table or File Name        : paint_analysis_history
+  Extraction Start Timestamp: starts at: 2026-10-18 09:54:51
+  Extraction End Timestamp  : ends at: 2026-10-18 09:55:01
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected: 0
+  Extraction Window         : 2026-09-03 to 2026-09-13
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 9.225s
+======================================================================
+
+
+============================================================
+[2026-10-18 09:59:19] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 09:59:19] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-F46EC6
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 09:59:19
+  Extraction End Timestamp  : ends at: 2026-10-18 09:59:19
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.010s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 09:59:19] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-1C0D95
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 09:59:19
+  Extraction End Timestamp  : ends at: 2026-10-18 09:59:19
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.008s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 09:59:21] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-30FF23
+  Table or File Name        : paint_analysis_history
+  Extraction Start Timestamp: starts at: 2026-10-18 09:59:19
+  Extraction End Timestamp  : ends at: 2026-10-18 09:59:21
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected: 0
+  Extraction Window         : 2026-09-03 to 2026-09-13
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 2.062s
+======================================================================
+
+
+============================================================
+[2026-10-18 10:01:46] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:01:46] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-C0ED1A
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:01:46
+  Extraction End Timestamp  : ends at: 2026-10-18 10:01:46
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.009s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:01:46] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-ACFB81
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:01:46
+  Extraction End Timestamp  : ends at: 2026-10-18 10:01:46
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:01:48] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-613D63
+  Table or File Name        : paint_analysis_history
+  Extraction Start Timestamp: starts at: 2026-10-18 10:01:46
+  Extraction End Timestamp  : ends at: 2026-10-18 10:01:48
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected: 0
+  Extraction Window         : 2026-09-03 to 2026-09-13
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 1.681s
+======================================================================
+
+
+============================================================
+[2026-10-18 10:08:07] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:08:07] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-9B25F6
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:08:07
+  Extraction End Timestamp  : ends at: 2026-10-18 10:08:07
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.008s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:08:07] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-52ED6A
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:08:07
+  Extraction End Timestamp  : ends at: 2026-10-18 10:08:07
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 10:08:10] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-690C22
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 10:08:07
+  Extraction End Timestamp   : 2026-10-18 10:08:10
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 2.358s
+======================================================================
+
+============================================================
+[2026-10-18 10:14:29] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:14:29] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-879304
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:14:29
+  Extraction End Timestamp  : ends at: 2026-10-18 10:14:29
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.006s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:14:29] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-64411F
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:14:29
+  Extraction End Timestamp  : ends at: 2026-10-18 10:14:29
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 10:14:31] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-AE97A8
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 10:14:29
+  Extraction End Timestamp   : 2026-10-18 10:14:31
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 1.756s
+======================================================================
+
+============================================================
+[2026-10-18 10:15:06] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:15:06] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-01C9F1
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:15:06
+  Extraction End Timestamp  : ends at: 2026-10-18 10:15:06
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.007s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:15:06] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-9E6CAA
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:15:06
+  Extraction End Timestamp  : ends at: 2026-10-18 10:15:06
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.004s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 10:15:07] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-A7D5CA
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 10:15:06
+  Extraction End Timestamp   : 2026-10-18 10:15:07
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 1.249s
+======================================================================
+
+============================================================
+[2026-10-18 10:18:43] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:18:43] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-9AD464
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:18:43
+  Extraction End Timestamp  : ends at: 2026-10-18 10:18:43
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:18:43] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-98FDE3
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:18:43
+  Extraction End Timestamp  : ends at: 2026-10-18 10:18:43
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 10:18:45] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-460B14
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 10:18:43
+  Extraction End Timestamp   : 2026-10-18 10:18:45
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 1.340s
+======================================================================
+
+============================================================
+[2026-10-18 10:39:02] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:39:02] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-411AEB
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:39:02
+  Extraction End Timestamp  : ends at: 2026-10-18 10:39:02
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.012s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:39:02] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-5AC46F
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:39:02
+  Extraction End Timestamp  : ends at: 2026-10-18 10:39:02
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.007s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 10:39:04] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-CE2CD8
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 10:39:02
+  Extraction End Timestamp   : 2026-10-18 10:39:04
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 2.213s
+======================================================================
+
+============================================================
+[2026-10-18 10:44:28] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:44:28] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-E1DFF8
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:44:28
+  Extraction End Timestamp  : ends at: 2026-10-18 10:44:28
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.006s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:44:28] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-338418
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:44:28
+  Extraction End Timestamp  : ends at: 2026-10-18 10:44:28
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.004s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 10:44:30] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-1A0C6E
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 10:44:28
+  Extraction End Timestamp   : 2026-10-18 10:44:30
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 2.004s
+======================================================================
+
+C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py:376: UserWarning: Parsing dates in %d/%m/%Y format when dayfirst=False (the default) was specified. Pass `dayfirst=True` or specify a format to silence this warning.
+  parsed = pd.to_datetime(value, errors="raise")
+============================================================
+[2026-10-18 10:54:11] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:54:11] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-E9D563
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:54:11
+  Extraction End Timestamp  : ends at: 2026-10-18 10:54:11
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:54:11] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-4155D1
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:54:11
+  Extraction End Timestamp  : ends at: 2026-10-18 10:54:11
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.003s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 10:54:12] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-51C6AE
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 10:54:11
+  Extraction End Timestamp   : 2026-10-18 10:54:12
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 1.537s
+======================================================================
+
+C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py:393: UserWarning: Parsing dates in %d/%m/%Y format when dayfirst=False (the default) was specified. Pass `dayfirst=True` or specify a format to silence this warning.
+  parsed = pd.to_datetime(value, errors="raise")
+============================================================
+[2026-10-18 10:59:04] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 10:59:04] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-EF5738
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:59:04
+  Extraction End Timestamp  : ends at: 2026-10-18 10:59:04
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.006s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 10:59:04] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-A2DA4C
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 10:59:04
+  Extraction End Timestamp  : ends at: 2026-10-18 10:59:04
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 10:59:06] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-0A0730
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 10:59:04
+  Extraction End Timestamp   : 2026-10-18 10:59:06
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 1.551s
+======================================================================
+
+C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\pipeline\CSV\transformation.py:393: UserWarning: Parsing dates in %d/%m/%Y format when dayfirst=False (the default) was specified. Pass `dayfirst=True` or specify a format to silence this warning.
+  parsed = pd.to_datetime(value, errors="raise")
+============================================================
+[2026-10-18 11:02:18] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 11:02:18] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-C65878
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 11:02:18
+  Extraction End Timestamp  : ends at: 2026-10-18 11:02:18
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.004s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 11:02:18] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-A8FD6F
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 11:02:18
+  Extraction End Timestamp  : ends at: 2026-10-18 11:02:18
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.004s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 11:02:19] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-2E3F7D
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 11:02:18
+  Extraction End Timestamp   : 2026-10-18 11:02:19
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 1.332s
+======================================================================
+
+============================================================
+[2026-10-18 11:08:59] 🚀 STARTING CSV EXTRACTION BATCH
+============================================================
+
+
+======================================================================
+[2026-10-18 11:08:59] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-89A129
+  Table or File Name        : All Products - Cleaned.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 11:08:59
+  Extraction End Timestamp  : ends at: 2026-10-18 11:08:59
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 579
+  Number of Records Extracted: 579
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.006s
+======================================================================
+
+
+
+
+======================================================================
+[2026-10-18 11:08:59] 📋 EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID           : RUN-20261018-421CBB
+  Table or File Name        : GPC_Sales - make equal.csv
+  Extraction Start Timestamp: starts at: 2026-10-18 11:08:59
+  Extraction End Timestamp  : ends at: 2026-10-18 11:08:59
+  Extraction Status         : SUCCESS
+  Number of Records Read    : 796
+  Number of Records Extracted: 796
+  Number of Records Rejected: 0
+  Extraction Window         : N/A for CSV files
+  Validation Results        : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration       : 0.005s
+======================================================================
+
+
+
+======================================================================
+[2026-10-18 11:09:02] EXTRACTION REPORT
+======================================================================
+  Pipeline Run ID            : RUN-20261018-10EAD2
+  Table or File Name         : paint_analysis_history
+  Extraction Start Timestamp : 2026-10-18 11:08:59
+  Extraction End Timestamp   : 2026-10-18 11:09:02
+  Extraction Status          : SUCCESS
+  Number of Records Read     : 7
+  Number of Records Extracted: 7
+  Number of Records Rejected : 0
+  Extraction Window          : 2026-09-03 to 2026-09-13
+  Validation Results         : PASS
+  Error Message or Error Code: N/A
+  Extraction Duration        : 2.317s
+======================================================================
+
