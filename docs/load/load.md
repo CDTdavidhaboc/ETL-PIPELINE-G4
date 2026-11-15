@@ -1,17 +1,4 @@
 
-# Expected Output
-
-Stage 3 produces a fully populated, validated, and reconciled SQLite analytical database (`load/paintelligent.db`), a human-readable SQL export (`load/paintelligent_readable.sql`), a single-file-per-batch database backup snapshot (`load/backups/paintelligent_<batch_id>.db`), a rejected-records file (`load/rejected/load_rejected.csv`), structured batch metadata (`load/load_metadata.json`), and a non-repetitive operational load report (`logs/load.log`).
-
-The documentation and implemented load process (`pipeline/CSV/load.py`) are fully aligned so that any team member can understand, validate, monitor, and maintain the Load Stage:
-
-- **Validated and Reconciled Target Data:** All `579` products (`product_table` / `dim_product`), `796` sales transactions (`sales_table` / `fact_sales`), and `7` paint analysis records (`paint_analysis_table` / `fact_paint_analysis`) from batch `BATCH-20261018-0B474A` (`TR-20261018-F8AA3D`) are loaded inside an atomic transaction (`BEGIN IMMEDIATE ... COMMIT`) and reconciled 100% against the Transformation Stage handover inputs (`₱574,810.00` total sales — **Dry Season:** `₱273,670.00` across `368` rows / `974` units; **Rainy Season:** `₱301,140.00` across `428` rows / `1,077` units — `2,051` total units sold, and `₱373,611.54` total product estimated price).
-- **Traceable, Auditable, and Recoverable Batches:** Every loaded record and `load_log` entry is stamped with `run_id`, `transformation_run_id`, `batch_id`, and `loaded_at`. Failed loads automatically roll back (`conn.rollback()`) and can be recovered from `load/backups/paintelligent_<batch_id>.db` and safely re-executed without creating duplicate rows or inflating financial totals.
-- **Strict Stage Boundary:** Only approved data handed over from the Transformation Stage (`transformation/output/`) is loaded. No new data extraction or business transformation logic is performed in this stage.
-
----
-
-### Complete load.md (Including # Expected Output at the Bottom)
 # Stage 3: Data Load Documentation (Lab 5)
 
 ## Objective
