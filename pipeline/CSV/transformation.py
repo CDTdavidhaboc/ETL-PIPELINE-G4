@@ -1081,6 +1081,13 @@ def run_transformation() -> int:
         "quarantine_file": str(QUARANTINE_FILE),
     }
 
+    try:
+        handover_json = OUTPUT_DIR / "handover_metadata.json"
+        with open(handover_json, "w", encoding="utf-8") as fh:
+            json.dump(metadata, fh, indent=2, ensure_ascii=False)
+    except Exception:
+        logger.warning("Could not write handover_metadata.json")
+
     logger.info("Summary:")
     logger.info("  Status: %s", overall_status)
     logger.info(

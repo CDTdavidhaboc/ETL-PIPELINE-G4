@@ -1,0 +1,23 @@
+2026-11-15 10:03:48 | INFO | ==============================================================================
+2026-11-15 10:03:48 | INFO | PAINTELLIGENT STAGE 3: DATA LOAD REPORT
+2026-11-15 10:03:48 | INFO |   Run ID               : LOAD-20261115-A45343
+2026-11-15 10:03:48 | INFO |   Transformation Run ID: TR-20261018-F8AA3D
+2026-11-15 10:03:48 | INFO |   Batch ID             : BATCH-20261018-0B474A
+2026-11-15 10:03:48 | INFO |   Batch Window         : 2025-01-01 to 2025-12-31
+2026-11-15 10:03:48 | INFO |   Target Database      : paintelligent.db (Backup: paintelligent_BATCH-20261018-0B474A.db)
+2026-11-15 10:03:48 | INFO |   Code & Retention     : v1.4.0 | Operational=30d | Audit=365d
+2026-11-15 10:03:48 | INFO | ------------------------------------------------------------------------------
+2026-11-15 10:03:48 | INFO | PRE-LOAD CHECKS (PASS) : Target connection=PASS | Schema match=PASS | Handover status=PASS | Handover record count=PASS | Storage space availability=PASS | Duplicate batch check=PASS
+2026-11-15 10:03:48 | INFO | ------------------------------------------------------------------------------
+2026-11-15 10:03:48 | INFO | TABLE LOAD METRICS:
+2026-11-15 10:03:48 | INFO |   product_table        | type=INCREMENTAL | start=2026-11-15 10:03:48 | end=2026-11-15 10:03:48 | duration=0.049s | received=579 | inserted=0 | updated=579 | rejected=0 | status=SUCCESS
+2026-11-15 10:03:48 | INFO |   sales_table          | type=INCREMENTAL | start=2026-11-15 10:03:48 | end=2026-11-15 10:03:48 | duration=0.060s | received=796 | inserted=796 | updated=0 | rejected=0 | status=SUCCESS
+2026-11-15 10:03:48 | INFO |   paint_analysis_table | type=INCREMENTAL | start=2026-11-15 10:03:48 | end=2026-11-15 10:03:48 | duration=0.002s | received=7 | inserted=0 | updated=7 | rejected=0 | status=SUCCESS
+2026-11-15 10:03:48 | INFO | ------------------------------------------------------------------------------
+2026-11-15 10:03:48 | INFO | POST-LOAD CHECKS (PASS): Record reconciliation=PASS | Target batch row count=PASS | Primary key uniqueness=PASS | Referential integrity=PASS | Required columns not null=PASS | Amount and quantity reconciliation=PASS | Optional attribute null rate check=PASS
+2026-11-15 10:03:48 | INFO |   Reconciled Totals    : sales.unit_sold: src=574,810.00 vs db=574,810.00; sales.quantity: src=2,051 vs db=2,051; product.estimated_price_php: src=373,611.54 vs db=373,611.54
+2026-11-15 10:03:48 | INFO |   Seasonal Sales       : Dry Season (368 rows): sales=273,670.00 (src=273,670.00), qty=974 | Rainy Season (428 rows): sales=301,140.00 (src=301,140.00), qty=1,077
+2026-11-15 10:03:48 | INFO |   Optional Null Rates  : category nulls=28/579 (4.84%), brand nulls=26/579 (4.49%)
+2026-11-15 10:03:48 | INFO | ------------------------------------------------------------------------------
+2026-11-15 10:03:48 | INFO | FINAL RESULT           : status=SUCCESS | decision=APPROVED | error=NULL | rejected_rows=0 | total_duration=0.181s
+2026-11-15 10:03:48 | INFO | ==============================================================================

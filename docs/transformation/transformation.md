@@ -330,7 +330,7 @@
     - At or below 1%, the rejection-rate check passes if at least one record was read.
     - Above 1%, the batch is marked for manual review.
     - If no records were read, the transformation fails rather than being automatically approved.
-    A high rejection rate should first be investigated by dataset, rule ID, and quarantine reason. The threshold is a review trigger, not a reason to weaken validation or accept invalid data. If a threshold is changed, the project team should document and approve the change.
+    A high rejection rate should first be investi gated by dataset,rule ID, and quarantine reason. The threshold is a review trigger, not a reason to weaken validation or accept invalid data. If a threshold is changed, the project team should document and approve the change.
     ## 7.4 Status Outcomes
     The script can report:
     - `SUCCESS`: no records were rejected and critical checks passed.

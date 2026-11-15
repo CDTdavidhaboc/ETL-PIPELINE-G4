@@ -1197,3 +1197,53 @@ ValueError: The truth value of an array with more than one element is ambiguous.
 2026-10-18 11:09:02 | INFO |   Log retention policy: 30 days
 2026-10-18 11:09:02 | INFO |   Finished: 2026-10-18T03:09:02+00:00 (3.64 seconds)
 2026-10-18 11:09:02 | INFO | ============================================================
+2026-10-18 11:55:27 | INFO | ==============================================================================
+2026-10-18 11:55:27 | INFO | PAINTELLIGENT TRANSFORMATION REPORT
+2026-10-18 11:55:27 | INFO | Run ID: TR-20261018-F8AA3D
+2026-10-18 11:55:27 | INFO | Batch ID: BATCH-20261018-0B474A
+2026-10-18 11:55:27 | INFO | Start Timestamp: 2026-10-18T03:55:27+00:00
+2026-10-18 11:55:27 | INFO | Code Version: 1.4.0 | Rules Version: 1.4.0
+2026-10-18 11:55:30 | INFO | Extracted DataFrames received: products=579, sales=796, paint_analysis=7
+2026-10-18 11:55:30 | INFO | Source profile | dataset=products | rows=579 | columns=6 | headers=['Product', 'Unit Purchase Price', 'Est. Price (PHP)', 'Stocks', 'Category', 'Brand']
+2026-10-18 11:55:30 | INFO | Source profile | dataset=products | blank_or_missing_by_column={"Category": 28, "Brand": 26}
+2026-10-18 11:55:30 | INFO | Source profile | dataset=sales | rows=796 | columns=7 | headers=['Date', 'Brand', 'Product', 'Category', 'Total Sales (PHP)', 'Units Sold', 'Season']
+2026-10-18 11:55:30 | INFO | Source profile | dataset=sales | blank_or_missing_by_column={}
+2026-10-18 11:55:30 | INFO | Source profile | dataset=paint_analysis | rows=7 | columns=4 | headers=['color_hex', 'rgb', 'paint_components', 'analysis_date']
+2026-10-18 11:55:30 | INFO | Source profile | dataset=paint_analysis | blank_or_missing_by_column={}
+2026-10-18 11:55:30 | INFO | Flexible header mapping: {"product": "product_name", "unit_purchase_price": "unit_purchase_price", "stocks": "stocks", "category": "category", "brand": "brand", "est_price_php": "estimated_price_php"}
+2026-10-18 11:55:30 | INFO | Flexible header mapping: {"date": "sales_date", "brand": "brand", "product": "product", "category": "category", "units_sold": "quantity", "season": "season", "total_sales_php": "unit_sold"}
+2026-10-18 11:55:31 | INFO | Flexible header mapping: {"color_hex": "color", "rgb": "rgb", "paint_components": "paint_components", "analysis_date": "analysis_date"}
+2026-10-18 11:55:31 | INFO | Source profile | dataset=products_transformed | rows=579 | columns=7 | headers=['product_id', 'product_name', 'unit_purchase_price', 'estimated_price_php', 'stocks', 'category', 'brand']
+2026-10-18 11:55:31 | INFO | Source profile | dataset=products_transformed | blank_or_missing_by_column={"category": 28, "brand": 26}
+2026-10-18 11:55:31 | INFO | Source profile | dataset=sales_transformed | rows=796 | columns=8 | headers=['sales_id', 'brand', 'product', 'category', 'sales_date', 'quantity', 'unit_sold', 'season']
+2026-10-18 11:55:31 | INFO | Source profile | dataset=sales_transformed | blank_or_missing_by_column={}
+2026-10-18 11:55:31 | INFO | Source profile | dataset=paint_analysis_transformed | rows=7 | columns=5 | headers=['id', 'color', 'rgb', 'paint_components', 'analysis_date']
+2026-10-18 11:55:31 | INFO | Source profile | dataset=paint_analysis_transformed | blank_or_missing_by_column={"id": 7}
+2026-10-18 11:55:31 | INFO | Transformation operations applied: canonical header mapping; text trimming; decimal conversion for prices/sales amounts; integer conversion for sales quantity; permissive stock cleaning (numeric stock values become integers, other nonblank values are preserved); date standardization; normalized product-reference matching; RGB and JSON-like component validation; generated Product/Sales IDs; rejected records written to quarantine.
+2026-10-18 11:55:31 | INFO | Dataset Summary:
+2026-10-18 11:55:31 | INFO |   products | read=579 | output=579 | modified=98 | rejected=0
+2026-10-18 11:55:31 | INFO |   products rules applied: C-01, C-02, C-03
+2026-10-18 11:55:31 | INFO |   sales | read=796 | output=796 | modified=796 | rejected=0
+2026-10-18 11:55:31 | INFO |   sales rules applied: C-01, C-02, C-03, C-05, C-06
+2026-10-18 11:55:31 | INFO |   paint_analysis | read=7 | output=7 | modified=7 | rejected=0
+2026-10-18 11:55:31 | INFO |   paint_analysis rules applied: C-01, C-04, C-06, C-07, C-08
+2026-10-18 11:55:31 | INFO | Validation Results: {"products.schema": "PASS", "products.record_reconciliation": "PASS", "sales.schema": "PASS", "sales.record_reconciliation": "PASS", "paint_analysis.schema": "PASS", "paint_analysis.record_reconciliation": "PASS", "products.generated_ids": "PASS", "sales.generated_ids": "PASS", "rejection_rate": "PASS"}
+2026-10-18 11:55:31 | INFO | Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv (0 records)
+2026-10-18 11:55:31 | INFO | Rejection breakdown: no records quarantined
+2026-10-18 11:55:31 | INFO | Rejection Rate: 0.000%
+2026-10-18 11:55:31 | INFO | Transformation Status: SUCCESS
+2026-10-18 11:55:31 | INFO | Summary:
+2026-10-18 11:55:31 | INFO |   Status: SUCCESS
+2026-10-18 11:55:31 | INFO |   Records: read=1382, output=1382, modified=901, rejected=0
+2026-10-18 11:55:31 | INFO |   products: read=579, output=579, modified=98, rejected=0
+2026-10-18 11:55:31 | INFO |   sales: read=796, output=796, modified=796, rejected=0
+2026-10-18 11:55:31 | INFO |   paint_analysis: read=7, output=7, modified=7, rejected=0
+2026-10-18 11:55:31 | INFO |   Validation: All checks passed
+2026-10-18 11:55:31 | INFO |   Quarantined records: 0
+2026-10-18 11:55:31 | INFO |   Quarantine file: C:\Users\David Emanuel\etl\ETL-PIPELINE-G4\transformation\output\quarantine.csv
+2026-10-18 11:55:31 | INFO |   Parent run: NOT_RETURNED_BY_EXTRACTOR
+2026-10-18 11:55:31 | INFO |   Batch window: Full available source data
+2026-10-18 11:55:31 | INFO |   Code/rules version: 1.4.0/1.4.0
+2026-10-18 11:55:31 | INFO |   Log retention policy: 30 days
+2026-10-18 11:55:31 | INFO |   Finished: 2026-10-18T03:55:31+00:00 (3.83 seconds)
+2026-10-18 11:55:31 | INFO | ============================================================
