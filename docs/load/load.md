@@ -1,11 +1,3 @@
-Analyzed extraction.md:L300-370
-Analyzed media_1794703623699_1200fcc6.pdf
-Analyzed transformation.md:L410-435
-
-In your Lab 5 PDF (Page 8, right after Section 9) and matching the style at the end of your [transformation.md](file:///C:/Users/David%20Emanuel/etl/ETL-PIPELINE-G4/docs/transformation/transformation.md#L433-L435), here is the **# Expected Output** section—both on its own and inside the complete load.md block below (without recreating the deleted file on disk).
-
-### Just the # Expected Output Section
----
 
 # Expected Output
 
